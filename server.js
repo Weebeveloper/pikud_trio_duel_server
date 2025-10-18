@@ -3,6 +3,7 @@ const mysql = require("mysql2");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const webpush = require("web-push");
 
 require("dotenv").config();
 
@@ -21,6 +22,12 @@ const db = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0,
 });
+
+webpush.setVapidDetails(
+  `mailto:test@code.co.uk`,
+  process.env.WEB_PUSH_PUBLIC_KEY,
+  process.env.WEB_PUSH_PRIVATE_KEY
+);
 
 app.get("/api/health", async (req, res) => {
   try {
@@ -111,6 +118,67 @@ app.post("/api/login", (req, res) => {
       }
     }
   );
+});
+
+app.post("/api/subscribe", (req, res) => {
+  const { subscription, userId } = req.body;
+
+  if (!subscription || !userId) {
+    return res
+      .status(400)
+      .json({ message: "subscription and userId required" });
+  }
+
+  const { endpoint, keys } = subscription;
+  const { auth, p256dh } = keys;
+
+  const sqlQuery = `
+    INSERT INTO subscriptions (id, endpoint, keys_auth, keys_p256dh)
+    VALUES (?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+      endpoint = VALUES(endpoint),
+      keys_auth = VALUES(keys_auth),
+      keys_p256dh = VALUES(keys_p256dh)
+  `;
+
+  db.query(sqlQuery, [userId, endpoint, auth, p256dh], (err) => {
+    if (err) {
+      console.error("DB subscription error:", err);
+      return res.status(500).json({ message: "Failed to store subscription" });
+    }
+
+    res.status(201).json({ message: "Subscription stored" });
+  });
+});
+
+app.post("/api/sendNotification", async (req, res) => {
+  const { targetUserId, title, message } = req.body;
+
+  const sqlQuery = "SELECT * FROM subscriptions WHERE id = ?";
+
+  db.query(sqlQuery, [targetUserId], async (err, results) => {
+    if (err) return res.status(500).json({ message: err.message });
+    if (results.length === 0)
+      return res.status(404).json({ message: "User not subscribed" });
+
+    const subscription = {
+      endpoint: results[0].endpoint,
+      keys: {
+        auth: results[0].keys_auth,
+        p256dh: results[0].keys_p256dh,
+      },
+    };
+
+    const payload = JSON.stringify({ title, message });
+
+    try {
+      await webpush.sendNotification(subscription, payload);
+      res.status(200).json({ message: "Notification sent" });
+    } catch (err) {
+      console.error("Notification error:", err);
+      res.status(500).json({ message: "Failed to send notification" });
+    }
+  });
 });
 
 app.use((err, req, res, next) => {
