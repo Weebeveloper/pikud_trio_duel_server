@@ -30,6 +30,10 @@ db.connect((err) => {
   console.log("MySQL connected!");
 });
 
+app.get("/api/health", (req, res) => {
+  res.status(200).send("OK");
+});
+
 app.get("/api/verify-token", (req, res) => {
   const authHeader = req.headers["authorization"];
   const token = authHeader && authHeader.split(" ")[1];
