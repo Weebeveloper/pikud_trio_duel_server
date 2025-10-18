@@ -9,41 +9,42 @@ require("dotenv").config();
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: err.message });
-});
 
 const port = process.env.PORT || 3000;
 
-// Configure DB connection
-const db = mysql.createConnection({
+const db = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USERNAME,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_DBNAME,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
 });
 
-// Connect to DB
-db.connect((err) => {
-  if (err) throw err;
-  console.log("MySQL connected!");
-});
-
-app.get("/api/health", (req, res) => {
-  res.status(200).send("OK");
+app.get("/api/health", async (req, res) => {
+  try {
+    await db.promise().query("SELECT 1");
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("Health check failed:", err);
+    res.status(500).send("DB connection error");
+  }
 });
 
 app.get("/api/verify-token", (req, res) => {
-  const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.split(" ")[1];
+  try {
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
 
-  if (!token) return res.status(401).json({ message: "No token provided" });
+    if (!token) return res.status(401).json({ message: "No token provided" });
 
-  jwt.verify(token, "secretkey", (err, user) => {
-    if (err) return res.status(403).json({ message: "Invalid token" });
-    res.json({ user }); // send decoded user info
-  });
+    const user = jwt.verify(token, process.env.JWT_SECRET);
+    res.json({ user });
+  } catch (err) {
+    console.error("Token verification error:", err);
+    res.status(403).json({ message: "Invalid token" });
+  }
 });
 
 // GET user by id
@@ -75,24 +76,46 @@ app.get("/api/allUsers", (req, res) => {
 // Login endpoint
 app.post("/api/login", (req, res) => {
   const { email, password } = req.body;
+  if (!email || !password)
+    return res.status(400).json({ message: "Email and password are required" });
+
   db.query(
     "SELECT * FROM users WHERE email = ?",
     [email],
     async (err, result) => {
-      if (err) return res.status(500).send(err);
-      if (result.length === 0) return res.status(400).send("User not found");
+      try {
+        if (err) return res.status(500).json({ message: err });
+        if (result.length === 0)
+          return res.status(400).json({ message: "User not found" });
 
-      const user = result[0];
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) return res.status(400).send("Invalid credentials");
+        const user = result[0];
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch)
+          return res.status(400).json({ message: "Invalid credentials" });
 
-      const token = jwt.sign({ id: user.id, email: user.email }, "secretkey");
+        const token = jwt.sign(
+          { id: user.id, email: user.email },
+          process.env.JWT_SECRET
+        );
 
-      delete user.password;
+        delete user.password;
 
-      res.json({ message: "Login successful", token, userId: { id: user.id } });
+        res.json({
+          message: "Login successful",
+          token,
+          userId: { id: user.id },
+        });
+      } catch (error) {
+        console.error("Login error:", error);
+        res.status(500).json({ message: "Internal server error" });
+      }
     }
   );
+});
+
+app.use((err, req, res, next) => {
+  console.error(err.stack);
+  res.status(500).json({ error: err.message });
 });
 
 app.listen(port, () => console.log(`Server running on port ${port}`));
