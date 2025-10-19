@@ -179,13 +179,8 @@ app.post("/api/sendNotification", async (req, res) => {
 
     const payload = JSON.stringify({ title, message });
 
-    const nowLocal = new Date();
-    const localTimestamp = new Date(
-      nowLocal.getTime() - nowLocal.getTimezoneOffset() * 60000
-    )
-      .toISOString()
-      .slice(0, 19)
-      .replace("T", " ");
+    const nowUtc = new Date();
+    const timestamp = nowUtc.toISOString().slice(0, 19).replace("T", " ");
 
     try {
       await webpush.sendNotification(subscription, payload);
@@ -197,7 +192,7 @@ app.post("/api/sendNotification", async (req, res) => {
           sent_timestamp = VALUES(sent_timestamp)
       `;
 
-      db.query(sqlQuery, [targetUserId, localTimestamp], (err) => {
+      db.query(sqlQuery, [targetUserId, timestamp], (err) => {
         if (err) {
           console.error("DB subscription error:", err);
           return res
