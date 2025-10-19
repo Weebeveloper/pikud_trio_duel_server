@@ -132,23 +132,31 @@ app.post("/api/subscribe", (req, res) => {
   const { endpoint, keys } = subscription;
   const { auth, p256dh } = keys;
 
-  const sqlQuery = `
-    INSERT INTO subscriptions (id, endpoint, keys_auth, keys_p256dh)
-    VALUES (?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE
-      endpoint = VALUES(endpoint),
-      keys_auth = VALUES(keys_auth),
-      keys_p256dh = VALUES(keys_p256dh)
-  `;
+  try {
+    const sqlQuery = `
+        INSERT INTO subscriptions (id, endpoint, keys_auth, keys_p256dh)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          id = VALUES(id),
+          endpoint = VALUES(endpoint),
+          keys_auth = VALUES(keys_auth),
+          keys_p256dh = VALUES(keys_p256dh)
+      `;
 
-  db.query(sqlQuery, [userId, endpoint, auth, p256dh], (err) => {
-    if (err) {
-      console.error("DB subscription error:", err);
-      return res.status(500).json({ message: "Failed to store subscription" });
-    }
+    db.query(sqlQuery, [userId, endpoint, auth, p256dh], (err) => {
+      if (err) {
+        console.error("DB subscription error:", err);
+        return res
+          .status(500)
+          .json({ message: "Failed to store subscription" });
+      }
 
-    res.status(201).json({ message: "Subscription stored" });
-  });
+      res.status(201).json({ message: "Subscription stored" });
+    });
+  } catch (err) {
+    console.error("Notification subscription error:", err);
+    res.status(500).json({ message: "Failed to subscribe notification" });
+  }
 });
 
 app.post("/api/sendNotification", async (req, res) => {
@@ -171,14 +179,77 @@ app.post("/api/sendNotification", async (req, res) => {
 
     const payload = JSON.stringify({ title, message });
 
+    const nowLocal = new Date();
+    const localTimestamp = new Date(
+      nowLocal.getTime() - nowLocal.getTimezoneOffset() * 60000
+    )
+      .toISOString()
+      .slice(0, 19)
+      .replace("T", " ");
+
     try {
       await webpush.sendNotification(subscription, payload);
-      res.status(200).json({ message: "Notification sent" });
+
+      const sqlQuery = `
+        INSERT INTO subscriptions (id, sent_timestamp)
+        VALUES (?, ?)
+        ON DUPLICATE KEY UPDATE
+          sent_timestamp = VALUES(sent_timestamp)
+      `;
+
+      db.query(sqlQuery, [targetUserId, localTimestamp], (err) => {
+        if (err) {
+          console.error("DB subscription error:", err);
+          return res
+            .status(500)
+            .json({ message: "Failed to store subscription" });
+        }
+
+        res.status(201).json({ message: "Subscription stored/updated" });
+      });
     } catch (err) {
       console.error("Notification error:", err);
       res.status(500).json({ message: "Failed to send notification" });
     }
   });
+});
+
+app.get("/api/lastNotificationTimestamp", (req, res) => {
+  const userId = req.query.userId;
+  if (!userId) return res.status(400).json({ message: "User ID required" });
+
+  try {
+    const sqlQuery = `
+      SELECT sent_timestamp
+      FROM subscriptions 
+      WHERE id = ?
+      ORDER BY sent_timestamp DESC
+      LIMIT 1
+    `;
+
+    db.query(sqlQuery, [userId], (err, results) => {
+      if (err) {
+        console.error("DB notification error:", err);
+        return res
+          .status(500)
+          .json({ message: "Failed to fetch notification" });
+      }
+
+      if (results.length === 0) {
+        return res.status(404).json({ message: "No notifications found" });
+      }
+
+      const lastTimestamp = results[0].sent_timestamp;
+
+      res.status(200).json({
+        userId,
+        lastNotificationTimestamp: lastTimestamp,
+      });
+    });
+  } catch (err) {
+    console.error("Notification error:", err);
+    res.status(500).json({ message: "Failed to fetch notification" });
+  }
 });
 
 app.use((err, req, res, next) => {
