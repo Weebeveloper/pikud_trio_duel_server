@@ -162,56 +162,61 @@ app.post("/api/subscribe", (req, res) => {
 app.post("/api/sendNotification", async (req, res) => {
   const { targetUserId, title, message } = req.body;
 
-  const sqlQuery = "SELECT * FROM subscriptions WHERE id = ?";
+  try {
+    let sqlQuery = "SELECT * FROM subscriptions WHERE id = ?";
+    db.query(sqlQuery, [targetUserId], async (err, results) => {
+      if (err) return res.status(500).json({ message: err.message });
+      if (results.length === 0)
+        return res.status(404).json({ message: "User not subscribed" });
 
-  db.query(sqlQuery, [targetUserId], async (err, results) => {
-    if (err) return res.status(500).json({ message: err.message });
-    if (results.length === 0)
-      return res.status(404).json({ message: "User not subscribed" });
+      const subscription = {
+        endpoint: results[0].endpoint,
+        keys: {
+          auth: results[0].keys_auth,
+          p256dh: results[0].keys_p256dh,
+        },
+      };
 
-    const subscription = {
-      endpoint: results[0].endpoint,
-      keys: {
-        auth: results[0].keys_auth,
-        p256dh: results[0].keys_p256dh,
-      },
-    };
+      const payload = JSON.stringify({ title, message });
+      await webpush.sendNotification(subscription, payload).then(() => {
+        const now = new Date();
+        const timestamp =
+          now.getFullYear() +
+          "-" +
+          String(now.getMonth() + 1).padStart(2, "0") +
+          "-" +
+          String(now.getDate()).padStart(2, "0") +
+          " " +
+          String(now.getHours()).padStart(2, "0") +
+          ":" +
+          String(now.getMinutes()).padStart(2, "0") +
+          ":" +
+          String(now.getSeconds()).padStart(2, "0");
 
-    const payload = JSON.stringify({ title, message });
+        console.log(targetUserId, timestamp);
 
-    const nowLocal = new Date();
-    const localTimestamp = new Date(
-      nowLocal.getTime() - nowLocal.getTimezoneOffset() * 60000
-    )
-      .toISOString()
-      .slice(0, 19)
-      .replace("T", " ");
+        sqlQuery = `
+            INSERT INTO users (id, alert_timestamp)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE
+              alert_timestamp = VALUES(alert_timestamp)
+          `;
 
-    try {
-      await webpush.sendNotification(subscription, payload);
-
-      const sqlQuery = `
-        INSERT INTO subscriptions (id, sent_timestamp)
-        VALUES (?, ?)
-        ON DUPLICATE KEY UPDATE
-          sent_timestamp = VALUES(sent_timestamp)
-      `;
-
-      db.query(sqlQuery, [targetUserId, localTimestamp], (err) => {
-        if (err) {
-          console.error("DB subscription error:", err);
-          return res
-            .status(500)
-            .json({ message: "Failed to store subscription" });
-        }
-
-        res.status(201).json({ message: "Subscription stored/updated" });
+        db.query(sqlQuery, [targetUserId, timestamp], (err) => {
+          if (err) {
+            console.error("DB alert storage error:", err);
+            return res
+              .status(500)
+              .json({ message: "Failed to store alert timestamp" });
+          }
+          res.status(201).json({ message: "Alert stored/updated" });
+        });
       });
-    } catch (err) {
-      console.error("Notification error:", err);
-      res.status(500).json({ message: "Failed to send notification" });
-    }
-  });
+    });
+  } catch (err) {
+    console.error("Notification error:", err);
+    res.status(500).json({ message: "Failed to send notification" });
+  }
 });
 
 app.get("/api/lastNotificationTimestamp", (req, res) => {
@@ -220,10 +225,10 @@ app.get("/api/lastNotificationTimestamp", (req, res) => {
 
   try {
     const sqlQuery = `
-      SELECT sent_timestamp
-      FROM subscriptions 
+      SELECT alert_timestamp
+      FROM users 
       WHERE id = ?
-      ORDER BY sent_timestamp DESC
+      ORDER BY alert_timestamp DESC
       LIMIT 1
     `;
 
@@ -238,8 +243,7 @@ app.get("/api/lastNotificationTimestamp", (req, res) => {
       if (results.length === 0) {
         return res.status(404).json({ message: "No notifications found" });
       }
-
-      const lastTimestamp = results[0].sent_timestamp;
+      const lastTimestamp = results[0].alert_timestamp;
 
       res.status(200).json({
         userId,
