@@ -160,7 +160,7 @@ app.post("/api/subscribe", (req, res) => {
 });
 
 app.post("/api/sendNotification", async (req, res) => {
-  const { targetUserId, title, message } = req.body;
+  const { senderUserId, targetUserId, title, message } = req.body;
 
   try {
     let sqlQuery = "SELECT * FROM subscriptions WHERE id = ?";
@@ -193,16 +193,14 @@ app.post("/api/sendNotification", async (req, res) => {
           ":" +
           String(now.getSeconds()).padStart(2, "0");
 
-        console.log(targetUserId, timestamp);
-
         sqlQuery = `
-            INSERT INTO users (id, alert_timestamp)
-            VALUES (?, ?)
+            INSERT INTO trioduels (alert_timestamp, sender_id, receiver_id)
+            VALUES (?, ?, ?)
             ON DUPLICATE KEY UPDATE
               alert_timestamp = VALUES(alert_timestamp)
           `;
 
-        db.query(sqlQuery, [targetUserId, timestamp], (err) => {
+        db.query(sqlQuery, [timestamp, senderUserId, targetUserId], (err) => {
           if (err) {
             console.error("DB alert storage error:", err);
             return res
@@ -226,9 +224,9 @@ app.get("/api/lastNotificationTimestamp", (req, res) => {
   try {
     const sqlQuery = `
       SELECT alert_timestamp
-      FROM users 
-      WHERE id = ?
-      ORDER BY alert_timestamp DESC
+      FROM trioduels 
+      WHERE receiver_id = ?
+      ORDER BY alert_id DESC
       LIMIT 1
     `;
 
@@ -241,10 +239,13 @@ app.get("/api/lastNotificationTimestamp", (req, res) => {
       }
 
       if (results.length === 0) {
-        return res.status(404).json({ message: "No notifications found" });
+        return res.status(200).json({
+          userId,
+          lastNotificationTimestamp: undefined,
+        });
       }
-      const lastTimestamp = results[0].alert_timestamp;
 
+      const lastTimestamp = results[0].alert_timestamp;
       res.status(200).json({
         userId,
         lastNotificationTimestamp: lastTimestamp,
@@ -253,6 +254,44 @@ app.get("/api/lastNotificationTimestamp", (req, res) => {
   } catch (err) {
     console.error("Notification error:", err);
     res.status(500).json({ message: "Failed to fetch notification" });
+  }
+});
+
+app.get("/api/notificationHistory", (req, res) => {
+  try {
+    const sqlQuery = `
+      SELECT alert_timestamp, sender_id, receiver_id
+      FROM trioduels 
+      ORDER BY alert_id DESC
+      LIMIT 30
+    `;
+
+    db.query(sqlQuery, [], (err, results) => {
+      if (err) {
+        console.error("DB notification error:", err);
+        return res
+          .status(500)
+          .json({ message: "Failed to fetch notifications" });
+      }
+
+      if (results.length === 0) {
+        return res.status(200).json({});
+      }
+
+      let response = [];
+      results.forEach((result) => {
+        response.push({
+          alertTimestamp: result.alert_timestamp,
+          senderId: result.sender_id,
+          receiverId: result.receiver_id,
+        });
+      });
+
+      res.status(200).json(response);
+    });
+  } catch (err) {
+    console.error("Notification error:", err);
+    res.status(500).json({ message: "Failed to fetch notifications" });
   }
 });
 
